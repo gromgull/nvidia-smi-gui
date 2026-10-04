@@ -25,6 +25,7 @@ from subprocess import Popen, PIPE, STDOUT
 is_running = False
 
 PROCESS_LIST_HEIGHT = 200
+PROCESS_LIST_MIN_HEIGHT = 100
 SAMPLE_PS = "@@PS"
 SAMPLE_END = "@@END"
 
@@ -516,7 +517,7 @@ class MainWindow(QtWidgets.QWidget):
 
     def init_ui(self):
         self.setWindowTitle(self.window_name)
-        self.setFixedSize(500, 146)
+        self.resize(500, 146)
 
         self.setObjectName("MainWindow")
         self.setStyleSheet(
@@ -544,6 +545,21 @@ class MainWindow(QtWidgets.QWidget):
             header.resizeSection(col, width)
         self.tbl_processes.hide()
 
+    def layout_processes(self):
+        if not self.panel_list:
+            return
+        pnl = self.panel_list[-1]
+        top = pnl.y() + pnl.height() + pnl.margin
+        self.tbl_processes.setGeometry(
+            pnl.padding_left, top,
+            self.width() - pnl.padding_left - pnl.padding_right,
+            self.height() - top - pnl.padding_bottom
+        )
+
+    def resizeEvent(self, event):
+        super(MainWindow, self).resizeEvent(event)
+        self.layout_processes()
+
     def update_processes(self, processes):
         self.tbl_processes.clear()
         for proc in sorted(processes, key=lambda p: -p["memory"]):
@@ -569,12 +585,13 @@ class MainWindow(QtWidgets.QWidget):
         self.panel_list.append(pnl)
         pnl.move(0, panel_height)
         panel_height += pnl.height()
-        self.tbl_processes.setGeometry(
-            pnl.padding_left, panel_height + pnl.margin,
-            pnl.width() - pnl.padding_left - pnl.padding_right, PROCESS_LIST_HEIGHT
-        )
         self.tbl_processes.show()
-        self.setFixedSize(pnl.width(), panel_height + pnl.margin + PROCESS_LIST_HEIGHT + pnl.padding_bottom)
+        # GPU panels keep their fixed layout; the process list takes up any
+        # extra space when the window is resized.
+        extra_height = pnl.margin + pnl.padding_bottom
+        self.setMinimumSize(pnl.width(), panel_height + extra_height + PROCESS_LIST_MIN_HEIGHT)
+        self.resize(pnl.width(), panel_height + extra_height + PROCESS_LIST_HEIGHT)
+        self.layout_processes()
 
         self.move_to_center()
 
