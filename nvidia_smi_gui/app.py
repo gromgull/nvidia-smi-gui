@@ -12,6 +12,7 @@ import io
 import pty
 import os
 import socket
+import shlex
 
 import argparse
 
@@ -22,6 +23,25 @@ from subprocess import Popen, PIPE, STDOUT
 
 
 is_running = False
+
+PROCESS_LIST_HEIGHT = 200
+SAMPLE_PS = "@@PS"
+SAMPLE_END = "@@END"
+
+# One pmon sample per second, followed by the full command lines of the PIDs
+# it lists. pmon has no marker between samples when looping by itself, so we
+# print our own. ps writes to a pty here, so -ww stops it truncating lines.
+PMON_LOOP = """
+while :; do
+    out=$(nvidia-smi pmon -s m -c 1)
+    echo "$out"
+    echo """ + SAMPLE_PS + """
+    pids=$(echo "$out" | awk '!/^#/ && $2 != "-" { print $2 }' | paste -sd, -)
+    [ -n "$pids" ] && ps -ww -o pid=,args= -p "$pids"
+    echo """ + SAMPLE_END + """
+    sleep 1
+done
+"""
 
 
 def res(res_name):
@@ -479,6 +499,7 @@ class GPUInfoPanel(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QWidget):
 
     signal_addnew = QtCore.pyqtSignal(name="SIGNAL_ADDNEW")
+    signal_processes = QtCore.pyqtSignal(list, name="SIGNAL_PROCESSES")
     
     def __init__(self, *args, window_name):
         super(MainWindow, self).__init__(*args)
@@ -486,7 +507,10 @@ class MainWindow(QtWidgets.QWidget):
         self.panel_list = []
 
         self.signal_addnew.connect(self.add_new_panel)
+        self.signal_processes.connect(self.update_processes)
         self.cond_pnl = threading.Condition()
+
+        self.tbl_processes = QtWidgets.QTreeWidget(self)
 
         self.init_ui()
 
@@ -503,6 +527,37 @@ class MainWindow(QtWidgets.QWidget):
 
         self.setWindowIcon(QtGui.QIcon(res("graphic-card.svg")))
 
+        self.tbl_processes.setObjectName("tbl_processes")
+        self.tbl_processes.setHeaderLabels(["GPU", "PID", "Type", "Memory", "Process"])
+        self.tbl_processes.setRootIsDecorated(False)
+        self.tbl_processes.setFocusPolicy(QtCore.Qt.NoFocus)
+        self.tbl_processes.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.tbl_processes.setStyleSheet(
+            "QTreeWidget#tbl_processes {"
+            "   border: none;"
+            "   font-size: 12px;"
+            "}"
+        )
+        header = self.tbl_processes.header()
+        header.setStretchLastSection(True)
+        for col, width in enumerate([40, 70, 50, 70]):
+            header.resizeSection(col, width)
+        self.tbl_processes.hide()
+
+    def update_processes(self, processes):
+        self.tbl_processes.clear()
+        for proc in sorted(processes, key=lambda p: -p["memory"]):
+            item = QtWidgets.QTreeWidgetItem([
+                proc["gpu"], proc["pid"], proc["type"], str(proc["memory"]) + "M", proc["command"]
+            ])
+            item.setToolTip(4, proc["cmdline"])
+            for col in (0, 1, 3):
+                item.setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            self.tbl_processes.addTopLevelItem(item)
+
+    def update_processes_async(self, processes):
+        self.signal_processes.emit(processes)
+
     def add_new_panel(self):
         # print("[", threading.current_thread().name, "]", "acquiring cond...")
         self.cond_pnl.acquire()
@@ -513,7 +568,13 @@ class MainWindow(QtWidgets.QWidget):
         panel_height = sum([p.height() for p in self.panel_list])
         self.panel_list.append(pnl)
         pnl.move(0, panel_height)
-        self.setFixedSize(self.panel_list[0].width(), panel_height + pnl.height())
+        panel_height += pnl.height()
+        self.tbl_processes.setGeometry(
+            pnl.padding_left, panel_height + pnl.margin,
+            pnl.width() - pnl.padding_left - pnl.padding_right, PROCESS_LIST_HEIGHT
+        )
+        self.tbl_processes.show()
+        self.setFixedSize(pnl.width(), panel_height + pnl.margin + PROCESS_LIST_HEIGHT + pnl.padding_bottom)
 
         self.move_to_center()
 
@@ -578,6 +639,83 @@ def proc_smireader(fields, main_window, smi_stdout, proc):
     proc.kill()
 
 
+def parse_pmon_sample(lines):
+    # "nvidia-smi pmon" output: a "# gpu pid type fb ... command" header, a
+    # units line, then one row per process ("-" for pid if a GPU has none).
+    # The command is the last column and may contain spaces.
+    columns = None
+    processes = []
+    for line in lines:
+        if line.startswith("#"):
+            if columns is None:
+                columns = line[1:].split()
+            continue
+        if columns is None or "command" not in columns:
+            continue
+        values = line.split()
+        n = columns.index("command")
+        if len(values) < n:
+            continue
+        row = dict(zip(columns[:n], values[:n]))
+        if row.get("pid", "-") == "-":
+            continue
+        try:
+            memory = int(row.get("fb", "-"))
+        except ValueError:
+            memory = 0
+        processes.append({
+            "gpu": row.get("gpu", "?"),
+            "pid": row["pid"],
+            "type": row.get("type", ""),
+            "memory": memory,
+            "command": " ".join(values[n:]),
+            "cmdline": " ".join(values[n:]),
+        })
+    return processes
+
+
+def apply_cmdlines(processes, ps_lines):
+    # ps_lines are "pid args..." rows. Show the executable's base name plus
+    # its arguments, and keep the full command line for the tooltip.
+    cmdlines = {}
+    for line in ps_lines:
+        pid, _, args = line.partition(" ")
+        if args.strip():
+            cmdlines[pid] = args.strip()
+
+    for proc in processes:
+        cmdline = cmdlines.get(proc["pid"])
+        if cmdline is None:
+            continue
+        exe, _, rest = cmdline.partition(" ")
+        proc["command"] = (os.path.basename(exe) + " " + rest).strip()
+        proc["cmdline"] = cmdline
+    return processes
+
+
+def proc_pmonreader(main_window, pmon_stdout, proc):
+    pmon_lines = []
+    ps_lines = []
+    lines = pmon_lines
+    while is_running:
+        line = pmon_stdout.readline()
+        if not line:
+            break
+        line = line.strip()
+        if line == SAMPLE_PS:
+            lines = ps_lines
+        elif line == SAMPLE_END:
+            processes = apply_cmdlines(parse_pmon_sample(pmon_lines), ps_lines)
+            main_window.update_processes_async(processes)
+            pmon_lines = []
+            ps_lines = []
+            lines = pmon_lines
+        elif line:
+            lines.append(line)
+
+    proc.kill()
+
+
 def parse_args():
     par = argparse.ArgumentParser()
     par.add_argument("-H", "--host")
@@ -610,12 +748,17 @@ def main():
     cmd_gpu_stat = ["nvidia-smi", "--query-gpu=" + ",".join(fields), "--format=csv,noheader,nounits", "-lms", "300"]
 
     if args.host is not None:
-        cmd_gpu_stat = ["ssh", "-p", str(args.port), args.host] + cmd_gpu_stat
+        ssh = ["ssh", "-p", str(args.port), args.host]
+        cmd_gpu_stat = ssh + cmd_gpu_stat
+        # Run under sh explicitly in case the remote login shell isn't POSIX.
+        cmd_pmon = ssh + ["sh -c " + shlex.quote(PMON_LOOP)]
         hostname = args.host
     else:
+        cmd_pmon = ["sh", "-c", PMON_LOOP]
         hostname = socket.gethostname()
 
     proc_gpu_stat, gpu_stat, _ = get_iostream(cmd_gpu_stat)
+    proc_pmon, pmon, _ = get_iostream(cmd_pmon)
 
     app = QApplication(["nvidia-smi-gui"])
     app.setDesktopFileName("nvidia-smi-gui")
@@ -624,6 +767,8 @@ def main():
 
     th = threading.Thread(target=proc_smireader, name="SMI-StdoutReader", args=(fields, mw, gpu_stat, proc_gpu_stat), daemon=True)
     th.start()
+    th_pmon = threading.Thread(target=proc_pmonreader, name="PMON-StdoutReader", args=(mw, pmon, proc_pmon), daemon=True)
+    th_pmon.start()
     mw.show()
 
     while True:
@@ -634,6 +779,7 @@ def main():
         time.sleep(0.05)
 
     is_running = False
+    proc_pmon.kill()
     th.join()
 
 
