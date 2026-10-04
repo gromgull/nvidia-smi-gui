@@ -4,17 +4,32 @@ A Qt based GUI backend for monitering nvidia graphic devices through nvidia-smi.
 ## Dependencies:
 * nvidia-smi
 * python3
-* python3-pyqt4
+* PyQt5
+
+## Installation
+Install for the current user (into `~/.local`):
+
+    $ pip install --user .
+
+or, with [pipx](https://pipx.pypa.io/) into an isolated environment:
+
+    $ pipx install .
+
+`pip install --user` puts an `nvidia-smi-gui` command in `~/.local/bin`, and a
+launcher and icon in `~/.local/share`, so the app shows up in your desktop's
+application menu. pipx installs the command only, without the launcher.
 
 ## How to Use It
-simply fire up python3 to start the monitor, you will need PyQt4 and nvidia-smi successfully installed to run the script:
 
-    $ python3 ./nvidia-smi-gui.py
-    
+    $ nvidia-smi-gui
+
+You can also run it straight from a source checkout without installing:
+
+    $ ./nvidia-smi-gui.py
+
 or
 
-    $ chmod +x ./nvidia-smi-gui.py
-    $ ./nvidia-smi-gui.py
+    $ python3 -m nvidia_smi_gui
 
 ## Screenshots
 ![Screenshot1](https://raw.github.com/imkzh/nvidia-smi-gui/master/screenshots/1.png "Status of the GPU installed on my computer")

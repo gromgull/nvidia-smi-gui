@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NVIDIA SMI GUI
+GenericName=GPU Monitor
+Comment=Monitor NVIDIA graphics devices through nvidia-smi
+Exec=nvidia-smi-gui
+Icon=nvidia-smi-gui
+Terminal=false
+Categories=System;Monitor;
+Keywords=nvidia;gpu;cuda;monitor;
+StartupWMClass=nvidia-smi-gui

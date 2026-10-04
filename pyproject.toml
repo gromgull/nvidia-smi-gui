@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nvidia-smi-gui"
+version = "0.1.0"
+description = "A Qt based GUI for monitoring nvidia graphic devices through nvidia-smi"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "imkzh" }]
+requires-python = ">=3.6"
+dependencies = ["PyQt5"]
+
+[project.urls]
+Homepage = "https://github.com/imkzh/nvidia-smi-gui"
+
+[project.gui-scripts]
+nvidia-smi-gui = "nvidia_smi_gui.app:main"
+
+[tool.setuptools]
+packages = ["nvidia_smi_gui"]
+
+[tool.setuptools.data-files]
+"share/applications" = ["share/applications/nvidia-smi-gui.desktop"]
+"share/icons/hicolor/scalable/apps" = ["share/icons/hicolor/scalable/apps/nvidia-smi-gui.svg"]
+
+[tool.setuptools.package-data]
+nvidia_smi_gui = ["resources/*"]
